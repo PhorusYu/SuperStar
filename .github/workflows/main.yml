@@ -1,28 +1,29 @@
 
-name: 刷课喵
+name: SuperStar
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   Start:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 拷贝代码
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 设置 Python 环境
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
-      - name: 安装依赖包
+      - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: 配置 SuperStar
+      - name: Configure SuperStar
         env:
           CHAOXING_USERNAME: ${{ secrets.CHAOXING_USERNAME }}
           CHAOXING_PASSWORD: ${{ secrets.CHAOXING_PASSWORD }}
@@ -47,46 +48,60 @@ jobs:
           ]
 
           if missing:
-              print("缺少以下 GitHub Secrets：" + ", ".join(missing))
+              print("Missing GitHub Secrets: " + ", ".join(missing))
               sys.exit(1)
 
           config = configparser.ConfigParser()
-
           loaded = config.read(
               "config_template.ini",
               encoding="utf-8"
           )
 
           if not loaded:
-              raise FileNotFoundError("找不到 config_template.ini")
+              raise FileNotFoundError(
+                  "config_template.ini not found"
+              )
 
           if not config.has_section("common"):
-              raise ValueError("模板缺少 [common] 配置")
+              raise ValueError("Missing [common] section")
 
           if not config.has_section("tiku"):
-              raise ValueError("模板缺少 [tiku] 配置")
+              raise ValueError("Missing [tiku] section")
 
           common = config["common"]
-          common["username"] = os.environ["CHAOXING_USERNAME"].strip()
-          common["password"] = os.environ["CHAOXING_PASSWORD"].strip()
-          common["course_list"] = os.environ["CHAOXING_COURSE_LIST"].strip()
+          common["username"] = os.environ[
+              "CHAOXING_USERNAME"
+          ].strip()
+          common["password"] = os.environ[
+              "CHAOXING_PASSWORD"
+          ].strip()
+          common["course_list"] = os.environ[
+              "CHAOXING_COURSE_LIST"
+          ].strip()
           common["use_cookies"] = "false"
 
           tiku = config["tiku"]
           tiku["provider"] = "TikuYanxi"
-          tiku["tokens"] = os.environ["TIKU_TOKENS"].strip()
+          tiku["tokens"] = os.environ[
+              "TIKU_TOKENS"
+          ].strip()
           tiku["check_llm_connection"] = "false"
+          tiku["submit"] = "true"
 
           with open("config.ini", "w", encoding="utf-8") as f:
               config.write(f)
 
-          print("配置文件生成成功")
-          print("题库提供方：TikuYanxi")
-          print("课程数量：", len([
-              x for x in common["course_list"].split(",")
-              if x.strip()
-          ]))
+          print("Configuration generated successfully.")
+          print("Provider: TikuYanxi")
+          print(
+              "Course count:",
+              len([
+                  x for x in common["course_list"].split(",")
+                  if x.strip()
+              ])
+          )
+          print("Automatic submission: enabled")
           PY
 
-      - name: 运行 SuperStar
+      - name: Run SuperStar
         run: python main.py -c config.ini
