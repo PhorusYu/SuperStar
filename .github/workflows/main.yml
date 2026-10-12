@@ -41,6 +41,11 @@ jobs:
       - name: 安装依赖包
         run: pip install -r ./requirements.txt
 
+      - name: 导入 Excel 历史题库
+        run: |
+          pip install openpyxl
+          python import_excel_cache.py "题库搜索记录-题目导出.xlsx"
+          
       - name: Run main.py
         id: run_main
         continue-on-error: true
