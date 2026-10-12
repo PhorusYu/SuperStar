@@ -1,94 +1,185 @@
-name: 刷课喵
+
+name: 刷课
 
 on:
   push:
-    branches: [ main ]
-  # 是否开启每天 8 点定时运行，开启时取消下面两行注释
+    branches:
+      - main
+  # 如需每天定时运行，取消下面两行的注释
   # schedule:
   #   - cron: "0 8 * * *"
 
 permissions:
   contents: write
 
+concurrency:
+  group: superstar-course-run
+  cancel-in-progress: false
+
 jobs:
   Start:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 拷贝代码
+      # 1. 获取主分支代码
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 恢复历史答题缓存
-        shell: bash
-        run: |
-          # GitHub Actions 每次运行都是临时环境；从专用 answer-cache 分支恢复 cache.json。
-          if git fetch origin answer-cache 2>/dev/null; then
-            if git show origin/answer-cache:cache.json > cache.json 2>/dev/null; then
-              echo "已恢复历史题目缓存"
-            else
-              echo '{}' > cache.json
-              echo "缓存分支中没有 cache.json，创建空缓存"
-            fi
-          else
-            echo '{}' > cache.json
-            echo "尚无历史缓存，首次运行将创建缓存"
-          fi
-
+      # 2. 安装 Python
       - name: 设置 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
-      - name: 安装依赖包
-        run: pip install -r ./requirements.txt
-
-      - name: 导入 Excel 历史题库
+      # 3. 恢复以前积累的题目缓存
+      - name: 恢复历史题目缓存
+        shell: bash
         run: |
+          if git fetch origin refs/heads/answer-cache:refs/remotes/origin/answer-cache; then
+            if git show origin/answer-cache:cache.json > cache.json; then
+              echo "成功恢复历史缓存"
+            else
+              echo "缓存分支中没有 cache.json，初始化空缓存"
+              echo '{}' > cache.json
+            fi
+          else
+            echo "尚无历史缓存，初始化空缓存"
+            echo '{}' > cache.json
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("cache.json")
+          try:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict):
+                  raise ValueError("缓存不是 JSON 对象")
+              print(f"当前缓存题目数：{len(data)}")
+          except Exception as exc:
+              print(f"缓存文件无效：{exc}")
+              raise
+          PY
+
+      # 4. 安装项目依赖
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
           pip install openpyxl
-          python import_excel_cache.py "题库搜索记录-题目导出.xlsx"
-          
-      - name: Run main.py
+
+      # 5. 导入 Excel 中的历史题目
+      - name: 导入 Excel 历史题库
+        shell: bash
+        run: |
+          if [ -f "题库搜索记录-题目导出.xlsx" ]; then
+            python import_excel_cache.py "题库搜索记录-题目导出.xlsx"
+          else
+            echo "未找到 Excel 文件，跳过导入"
+          fi
+
+      # 6. 从模板生成题库配置
+      - name: 生成题库配置
+        env:
+          TIKU_TOKENS: ${{ secrets.TIKU_TOKENS }}
+        shell: bash
+        run: |
+          if [ ! -f config_template.ini ]; then
+            echo "错误：找不到 config_template.ini"
+            exit 1
+          fi
+
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          template = Path("config_template.ini")
+          config = Path("config.ini")
+          content = template.read_text(encoding="utf-8")
+
+          token = os.environ.get("TIKU_TOKENS", "").strip()
+
+          # 仅替换 [tiku] 配置段内的 tokens 项
+          pattern = r"(?ms)(^\[tiku\]\s*\n.*?^\s*tokens\s*=\s*).*$"
+
+          if re.search(pattern, content):
+              content = re.sub(
+                  pattern,
+                  lambda match: match.group(1) + token,
+                  content,
+                  count=1,
+              )
+          else:
+              print("错误：模板中没有找到 [tiku] 下的 tokens 配置")
+              raise SystemExit(1)
+
+          config.write_text(content, encoding="utf-8")
+          print("已生成 config.ini")
+          print("言溪 Token：" + ("已配置" if token else "未配置"))
+          PY
+
+      # 7. 运行 SuperStar
+      - name: 运行 main.py
         id: run_main
         continue-on-error: true
         env:
           CHAOXING_USERNAME: ${{ secrets.CHAOXING_USERNAME }}
           CHAOXING_PASSWORD: ${{ secrets.CHAOXING_PASSWORD }}
           CHAOXING_COURSE_LIST: ${{ secrets.CHAOXING_COURSE_LIST }}
-        run: python main.py -u "$CHAOXING_USERNAME" -p "$CHAOXING_PASSWORD" -l "$CHAOXING_COURSE_LIST"
+        run: |
+          python main.py \
+            -u "$CHAOXING_USERNAME" \
+            -p "$CHAOXING_PASSWORD" \
+            -l "$CHAOXING_COURSE_LIST"
 
-      - name: 保存更新后的题目缓存
+      # 8. 保存最新缓存到 answer-cache 分支
+      - name: 保存历史题目缓存
         if: always()
         shell: bash
         run: |
           set -e
+
           if [ ! -s cache.json ]; then
-            echo "cache.json 不存在或为空，跳过缓存保存"
+            echo "cache.json 不存在或为空，跳过保存"
             exit 0
           fi
 
-          # 先备份缓存，再切换到专用分支；answer-cache 分支只保存 cache.json。
+          # 校验缓存格式，避免将损坏文件推送到缓存分支
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("cache.json").read_text(encoding="utf-8"))
+          if not isinstance(data, dict):
+              raise ValueError("cache.json 必须是 JSON 对象")
+          print(f"准备保存 {len(data)} 条缓存")
+          PY
+
           cp cache.json /tmp/superstar-cache.json
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if git fetch origin answer-cache 2>/dev/null; then
-            git checkout -B answer-cache origin/answer-cache
+          if git fetch origin refs/heads/answer-cache:refs/remotes/origin/answer-cache; then
+            git checkout --orphan answer-cache-new
+            git rm -rf . >/dev/null 2>&1 || true
           else
-            git checkout --orphan answer-cache
+            git checkout --orphan answer-cache-new
             git rm -rf . >/dev/null 2>&1 || true
           fi
 
           cp /tmp/superstar-cache.json cache.json
           git add -f cache.json
-          if git diff --cached --quiet; then
-            echo "题目缓存没有变化，无需提交"
-          else
-            git commit -m "chore: update answer cache [skip ci]"
-            git push origin HEAD:answer-cache
-            echo "已将题目缓存保存到 answer-cache 分支"
-          fi
+          git commit -m "Update persistent question cache"
 
-      - name: 检查主程序运行结果
+          git push origin HEAD:refs/heads/answer-cache --force
+          echo "历史题目缓存保存完成"
+
+      # 9. 如果主程序失败，最终将 Action 标记为失败
+      - name: 检查运行结果
         if: always() && steps.run_main.outcome == 'failure'
         run: |
-          echo "main.py 运行失败；已尝试保存本次产生的缓存。请查看上面的运行日志。"
+          echo "SuperStar 运行失败，请查看上面的日志"
           exit 1
