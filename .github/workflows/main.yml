@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+
   # 如需每天定时运行，取消下面两行的注释
   # schedule:
   #   - cron: "0 8 * * *"
@@ -31,7 +32,7 @@ jobs:
         with:
           python-version: "3.13"
 
-      # 3. 恢复以前积累的题目缓存
+      # 3. 恢复历史题目缓存
       - name: 恢复历史题目缓存
         shell: bash
         run: |
@@ -39,7 +40,7 @@ jobs:
             if git show origin/answer-cache:cache.json > cache.json; then
               echo "成功恢复历史缓存"
             else
-              echo "缓存分支中没有 cache.json，初始化空缓存"
+              echo "缓存分支没有 cache.json，初始化空缓存"
               echo '{}' > cache.json
             fi
           else
@@ -52,14 +53,12 @@ jobs:
           from pathlib import Path
 
           path = Path("cache.json")
-          try:
-              data = json.loads(path.read_text(encoding="utf-8"))
-              if not isinstance(data, dict):
-                  raise ValueError("缓存不是 JSON 对象")
-              print(f"当前缓存题目数：{len(data)}")
-          except Exception as exc:
-              print(f"缓存文件无效：{exc}")
-              raise
+          data = json.loads(path.read_text(encoding="utf-8"))
+
+          if not isinstance(data, dict):
+              raise SystemExit("错误：cache.json 不是 JSON 对象")
+
+          print(f"当前历史缓存题目数：{len(data)}")
           PY
 
       # 4. 安装项目依赖
@@ -69,7 +68,7 @@ jobs:
           pip install -r requirements.txt
           pip install openpyxl
 
-      # 5. 导入 Excel 中的历史题目
+      # 5. 导入 Excel 历史题库
       - name: 导入 Excel 历史题库
         shell: bash
         run: |
@@ -79,45 +78,64 @@ jobs:
             echo "未找到 Excel 文件，跳过导入"
           fi
 
-      # 6. 从模板生成题库配置
+      # 6. 生成并验证 config.ini
       - name: 生成题库配置
         env:
           TIKU_TOKENS: ${{ secrets.TIKU_TOKENS }}
         shell: bash
         run: |
-          if [ ! -f config_template.ini ]; then
-            echo "错误：找不到 config_template.ini"
-            exit 1
-          fi
-
           python - <<'PY'
           import os
           import re
+          import configparser
           from pathlib import Path
 
           template = Path("config_template.ini")
           config = Path("config.ini")
-          content = template.read_text(encoding="utf-8")
 
+          if not template.exists():
+              raise SystemExit("错误：找不到 config_template.ini")
+
+          content = template.read_text(encoding="utf-8")
           token = os.environ.get("TIKU_TOKENS", "").strip()
 
-          # 仅替换 [tiku] 配置段内的 tokens 项
-          pattern = r"(?ms)(^\[tiku\]\s*\n.*?^\s*tokens\s*=\s*).*$"
-
-          if re.search(pattern, content):
-              content = re.sub(
-                  pattern,
-                  lambda match: match.group(1) + token,
-                  content,
-                  count=1,
+          # Token 必须是单行，避免破坏 INI 格式
+          if "\n" in token or "\r" in token:
+              raise SystemExit(
+                  "错误：TIKU_TOKENS 包含换行符，请检查 GitHub Secret"
               )
-          else:
-              print("错误：模板中没有找到 [tiku] 下的 tokens 配置")
-              raise SystemExit(1)
+
+          # 只替换 [tiku] 配置段中的 tokens 项
+          pattern = r"(?ms)(^\[tiku\][ \t]*\n.*?^[ \t]*tokens[ \t]*=[ \t]*).*$"
+
+          if not re.search(pattern, content):
+              raise SystemExit(
+                  "错误：模板中没有找到 [tiku] 下的 tokens 配置项"
+              )
+
+          content = re.sub(
+              pattern,
+              lambda match: match.group(1) + token,
+              content,
+              count=1,
+          )
 
           config.write_text(content, encoding="utf-8")
-          print("已生成 config.ini")
-          print("言溪 Token：" + ("已配置" if token else "未配置"))
+
+          # 检查配置文件语法
+          parser = configparser.ConfigParser()
+
+          try:
+              with config.open("r", encoding="utf-8") as file:
+                  parser.read_file(file)
+          except configparser.Error as exc:
+              raise SystemExit(f"config.ini 语法错误：{exc}")
+
+          if "tiku" not in parser:
+              raise SystemExit("错误：config.ini 缺少 [tiku] 配置段")
+
+          print("config.ini 已生成，INI 语法检查通过")
+          print("TIKU_TOKENS：" + ("已配置" if token else "未配置"))
           PY
 
       # 7. 运行 SuperStar
@@ -146,14 +164,17 @@ jobs:
             exit 0
           fi
 
-          # 校验缓存格式，避免将损坏文件推送到缓存分支
+          # 校验缓存，防止损坏文件覆盖历史缓存
           python - <<'PY'
           import json
           from pathlib import Path
 
-          data = json.loads(Path("cache.json").read_text(encoding="utf-8"))
+          path = Path("cache.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+
           if not isinstance(data, dict):
-              raise ValueError("cache.json 必须是 JSON 对象")
+              raise SystemExit("错误：cache.json 必须是 JSON 对象")
+
           print(f"准备保存 {len(data)} 条缓存")
           PY
 
@@ -162,24 +183,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if git fetch origin refs/heads/answer-cache:refs/remotes/origin/answer-cache; then
-            git checkout --orphan answer-cache-new
-            git rm -rf . >/dev/null 2>&1 || true
-          else
-            git checkout --orphan answer-cache-new
-            git rm -rf . >/dev/null 2>&1 || true
-          fi
+          # 创建独立缓存分支，避免把主分支代码带入缓存分支
+          git checkout --orphan answer-cache-new
+          git rm -rf . >/dev/null 2>&1 || true
 
           cp /tmp/superstar-cache.json cache.json
           git add -f cache.json
-          git commit -m "Update persistent question cache"
 
+          if git diff --cached --quiet; then
+            echo "缓存没有变化，无需提交"
+            exit 0
+          fi
+
+          git commit -m "Update persistent question cache"
           git push origin HEAD:refs/heads/answer-cache --force
+
           echo "历史题目缓存保存完成"
 
-      # 9. 如果主程序失败，最终将 Action 标记为失败
+      # 9. 检查主程序结果
       - name: 检查运行结果
         if: always() && steps.run_main.outcome == 'failure'
         run: |
-          echo "SuperStar 运行失败，请查看上面的日志"
+          echo "SuperStar 运行失败，请查看运行 main.py 步骤的日志"
           exit 1
