@@ -30,10 +30,13 @@ class CacheDAO:
     @Reference: https://github.com/SocialSisterYi/xuexiaoyi-to-xuexitong-tampermonkey-proxy
     """
     DEFAULT_CACHE_FILE = "cache.json"
+    # CacheDAO 会被多个题目查询线程分别实例化；锁必须在实例之间共享，
+    # 否则并发读-改-写可能互相覆盖，丢失刚查到的题目。
+    _global_lock = threading.RLock()
 
     def __init__(self, file: str = DEFAULT_CACHE_FILE):
         self.cache_file = Path(file)
-        self._lock = threading.RLock()
+        self._lock = self._global_lock
         if not self.cache_file.is_file():
             self._write_cache({})
 
