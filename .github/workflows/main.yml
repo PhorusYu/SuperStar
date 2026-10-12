@@ -86,7 +86,6 @@ jobs:
         run: |
           python - <<'PY'
           import os
-          import re
           import configparser
           from pathlib import Path
 
@@ -96,45 +95,51 @@ jobs:
           if not template.exists():
               raise SystemExit("错误：找不到 config_template.ini")
 
-          content = template.read_text(encoding="utf-8")
           token = os.environ.get("TIKU_TOKENS", "").strip()
 
-          # Token 必须是单行，避免破坏 INI 格式
           if "\n" in token or "\r" in token:
-              raise SystemExit(
-                  "错误：TIKU_TOKENS 包含换行符，请检查 GitHub Secret"
-              )
+              raise SystemExit("错误：TIKU_TOKENS 不能包含换行符")
 
-          # 只替换 [tiku] 配置段中的 tokens 项
-          pattern = r"(?ms)(^\[tiku\][ \t]*\n.*?^[ \t]*tokens[ \t]*=[ \t]*).*$"
+          lines = template.read_text(encoding="utf-8").splitlines()
+          in_tiku = False
+          token_replaced = False
+          output = []
 
-          if not re.search(pattern, content):
-              raise SystemExit(
-                  "错误：模板中没有找到 [tiku] 下的 tokens 配置项"
-              )
+          for line in lines:
+              stripped = line.strip()
 
-          content = re.sub(
-              pattern,
-              lambda match: match.group(1) + token,
-              content,
-              count=1,
-          )
+              if stripped.startswith("[") and stripped.endswith("]"):
+                  in_tiku = stripped.lower() == "[tiku]"
 
-          config.write_text(content, encoding="utf-8")
+              if (
+                  in_tiku
+                  and stripped.lower().startswith("tokens")
+                  and "=" in stripped
+                  and not stripped.startswith((";", "#"))
+              ):
+                  key = line.split("=", 1)[0]
+                  line = key + "=" + token
+                  token_replaced = True
 
-          # 检查配置文件语法
+              output.append(line)
+
+          if not token_replaced:
+              raise SystemExit("错误：未找到 [tiku] 下的 tokens 配置项")
+
+          config.write_text("\n".join(output) + "\n", encoding="utf-8")
+
           parser = configparser.ConfigParser()
+          with config.open("r", encoding="utf-8") as file:
+              parser.read_file(file)
 
-          try:
-              with config.open("r", encoding="utf-8") as file:
-                  parser.read_file(file)
-          except configparser.Error as exc:
-              raise SystemExit(f"config.ini 语法错误：{exc}")
+          required = ["provider", "submit", "cover_rate", "true_list", "false_list"]
+          missing = [key for key in required if key not in parser["tiku"]]
 
-          if "tiku" not in parser:
-              raise SystemExit("错误：config.ini 缺少 [tiku] 配置段")
+          if missing:
+              raise SystemExit(f"配置缺少必要字段：{', '.join(missing)}")
 
-          print("config.ini 已生成，INI 语法检查通过")
+          print("config.ini 语法检查通过")
+          print("已确认 true_list 和 false_list 存在")
           print("TIKU_TOKENS：" + ("已配置" if token else "未配置"))
           PY
 
