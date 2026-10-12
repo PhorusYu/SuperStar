@@ -1,4 +1,4 @@
-
+```yaml
 name: 刷课
 
 on:
@@ -78,7 +78,7 @@ jobs:
             echo "未找到 Excel 文件，跳过导入"
           fi
 
-      # 6. 生成并验证 config.ini
+      # 6. 生成并验证 config.ini，同时启用自动提交
       - name: 生成题库配置
         env:
           TIKU_TOKENS: ${{ secrets.TIKU_TOKENS }}
@@ -103,6 +103,7 @@ jobs:
           lines = template.read_text(encoding="utf-8").splitlines()
           in_tiku = False
           token_replaced = False
+          submit_replaced = False
           output = []
 
           for line in lines:
@@ -121,10 +122,23 @@ jobs:
                   line = key + "=" + token
                   token_replaced = True
 
+              elif (
+                  in_tiku
+                  and stripped.lower().startswith("submit")
+                  and "=" in stripped
+                  and not stripped.startswith((";", "#"))
+              ):
+                  key = line.split("=", 1)[0]
+                  line = key + "=true"
+                  submit_replaced = True
+
               output.append(line)
 
           if not token_replaced:
               raise SystemExit("错误：未找到 [tiku] 下的 tokens 配置项")
+
+          if not submit_replaced:
+              raise SystemExit("错误：未找到 [tiku] 下的 submit 配置项")
 
           config.write_text("\n".join(output) + "\n", encoding="utf-8")
 
@@ -132,14 +146,25 @@ jobs:
           with config.open("r", encoding="utf-8") as file:
               parser.read_file(file)
 
-          required = ["provider", "submit", "cover_rate", "true_list", "false_list"]
+          required = [
+              "provider",
+              "submit",
+              "cover_rate",
+              "true_list",
+              "false_list",
+          ]
           missing = [key for key in required if key not in parser["tiku"]]
 
           if missing:
               raise SystemExit(f"配置缺少必要字段：{', '.join(missing)}")
 
+          if parser.getboolean("tiku", "submit") is not True:
+              raise SystemExit("错误：自动提交配置未成功启用")
+
           print("config.ini 语法检查通过")
           print("已确认 true_list 和 false_list 存在")
+          print("自动提交：已启用")
+          print("题库覆盖率门槛：" + parser["tiku"]["cover_rate"])
           print("TIKU_TOKENS：" + ("已配置" if token else "未配置"))
           PY
 
@@ -211,3 +236,4 @@ jobs:
         run: |
           echo "SuperStar 运行失败，请查看运行 main.py 步骤的日志"
           exit 1
+```
