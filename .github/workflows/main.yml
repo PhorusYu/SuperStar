@@ -1,4 +1,4 @@
-```yaml
+
 name: 刷课
 
 on:
@@ -236,4 +236,3 @@ jobs:
         run: |
           echo "SuperStar 运行失败，请查看运行 main.py 步骤的日志"
           exit 1
-```
